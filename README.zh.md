@@ -1,11 +1,10 @@
-
 <div align="center">
 
 # dsh-ccswitch
 
 **把 CCSwitch 的技能与 MCP 服务一起导入 DeepSeek Harness，不改动 DSH 本身。**
 
-[🇬🇧 English](README.md) · [🇨🇳 中文](README.zh.md)
+[English](README.md) · [中文](README.zh.md)
 
 ![DSH plugin](https://img.shields.io/badge/DSH-plugin-blue) ![Version](https://img.shields.io/badge/version-0.1.0-2ea44f) ![License](https://img.shields.io/badge/license-MIT-green) ![Node](https://img.shields.io/badge/node-%3E%3D22.5-339933)
 
@@ -88,4 +87,3 @@ cd dsh-ccswitch && node --no-warnings test-apply.mjs
 - 读库用 Node 内置 `node:sqlite`（v22.5+），零额外依赖。
 - 运行期经 `$DSH_HOME/profiles/node_modules` 回退路径导入 yaml、@deepseek-ai/dsh-settings、@deepseek-ai/schemastery。
 - `@deepseek-ai/dsh-mcp-client` 由 loader 按名字解析。
-

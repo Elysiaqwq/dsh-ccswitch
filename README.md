@@ -1,11 +1,10 @@
-
 <div align="center">
 
 # dsh-ccswitch
 
 **Import CCSwitch's skills and MCP servers into DeepSeek Harness in one plugin — without modifying DSH itself.**
 
-[🇬🇧 English](README.md) · [🇨🇳 中文](README.zh.md)
+[English](README.md) · [中文](README.zh.md)
 
 ![DSH plugin](https://img.shields.io/badge/DSH-plugin-blue) ![Version](https://img.shields.io/badge/version-0.1.0-2ea44f) ![License](https://img.shields.io/badge/license-MIT-green) ![Node](https://img.shields.io/badge/node-%3E%3D22.5-339933)
 
@@ -88,4 +87,3 @@ Reads the real CCSwitch skills (77) and MCP servers (4), checks mappings, and dr
 - Node built-in `node:sqlite` (v22.5+) for the DB — zero extra deps.
 - Runtime peers (`yaml`, `@deepseek-ai/dsh-settings`, `@deepseek-ai/schemastery`) resolved through the `$DSH_HOME/profiles/node_modules` fallback.
 - `@deepseek-ai/dsh-mcp-client` is resolved by name through the loader.
-
