@@ -109,16 +109,34 @@ const ctx = {
       return
     }
     if (names.includes('credentials')) {
-      callback({ credentials: { resolve: async () => undefined, describe: async () => ({ configured: false, writable: true }), set: async (ref, value) => { storedCreds.push({ ref, value }) }, unset: async (ref) => { unsetCreds.push(ref) } } })
+      const credStore = new Map()
+      callback({ credentials: {
+        resolve: async (ref) => (credStore.has(ref) ? { value: credStore.get(ref), source: 'test' } : undefined),
+        describe: async (ref) => ({ configured: credStore.has(ref), writable: true }),
+        set: async (ref, value) => { credStore.set(ref, value); storedCreds.push({ ref, value }) },
+        unset: async (ref) => { credStore.delete(ref); unsetCreds.push(ref) },
+      } })
       return
     }
     if (names.includes('settings')) {
+      let llmProviders = {}
       callback({ settings: {
         register: (ns, schema) => { registeredNs = ns; return { get: () => currentCfg, watch: () => () => {} } },
         replace: (ns, section) => { replaced = { ns, section }; return Promise.resolve() },
-        get: (ns) => (ns === 'llm-pi-ai' ? { providers: {} } : undefined),
-        update: async (ns, patch) => { updated.push({ ns, patch }) },
-        mutate: async (ns, ops) => { mutated.push({ ns, ops }) },
+        get: (ns) => (ns === 'llm-pi-ai' ? { providers: llmProviders } : undefined),
+        describe: () => [{ ns: 'llm-pi-ai', user: { providers: llmProviders } }],
+        update: async (ns, patch) => {
+          if (ns !== 'llm-pi-ai') return
+          updated.push({ ns, patch })
+          llmProviders = { ...llmProviders, ...patch.providers }
+        },
+        mutate: async (ns, ops) => {
+          if (ns !== 'llm-pi-ai') return
+          mutated.push({ ns, ops })
+          for (const op of ops) {
+            if (op.op === 'unset' && op.path[0] === 'providers') delete llmProviders[op.path[1]]
+          }
+        },
       }, effect: fn => fn() })
       return
     }

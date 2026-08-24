@@ -709,10 +709,28 @@ export async function reconcileModels(state, ctx) {
   const dbPath = modelsCfg.path ?? mcpCfg.path
   const disabled = Array.isArray(modelsCfg.disabled) ? modelsCfg.disabled : []
   const llmNs = state.llmNs
-  const current = settings.get(llmNs)
-  const currentProviders = current && typeof current.providers === 'object' && current.providers !== null
-    ? current.providers
-    : {}
+  // The RAW user section (via describe().user) is what the diff must compare
+  // against: the resolved settings.get() value carries schema defaults, so
+  // comparing raw profiles against it would never deep-equal and every boot
+  // would rewrite the namespace.
+  let currentProviders = {}
+  if (typeof settings.describe === 'function') {
+    try {
+      const descriptor = settings.describe().find(row => row.ns === llmNs)
+      const rawSection = descriptor?.user
+      if (rawSection && typeof rawSection.providers === 'object' && rawSection.providers !== null) {
+        currentProviders = rawSection.providers
+      }
+    } catch {
+      currentProviders = {}
+    }
+  }
+  if (Object.keys(currentProviders).length === 0) {
+    const resolved = settings.get(llmNs)
+    if (resolved && typeof resolved.providers === 'object' && resolved.providers !== null) {
+      currentProviders = resolved.providers
+    }
+  }
   const owned = Object.keys(currentProviders).filter(route => route.startsWith(MODEL_PREFIX))
 
   const removeRoutes = async (routes) => {
