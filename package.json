@@ -20,7 +20,10 @@
     "index.js",
     "main.js",
     "client.js",
-    "README.md"
+    "README.md",
+    "README.zh.md",
+    "README.i18n.yaml",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=22.5"

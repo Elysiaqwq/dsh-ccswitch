@@ -1,0 +1,75 @@
+# dsh-ccswitch
+
+> [🇬🇧 English](README.md) | 🇨🇳 中文
+
+把 CCSwitch 的**技能**与 **MCP 服务**一起导入 DeepSeek Harness 的合并插件，不改动 DSH 本身。
+
+## 功能
+
+### 技能
+- 读取 \`~/.cc-switch/skills/<name>/SKILL.md\`（标准 SKILL.md 格式），以名为 \`ccswitch\` 的 \`ctx.skills\` 提供者注册。
+- 输入框输入 **/** 即可弹出选择框引用（DSH 内置 ui-skill 自动列出）；选中插入 \`/name\`，tool-skill 会把技能正文注入提示词。
+- 同名技能以 DSH 自带版本优先（rank 700 > 内置 600）；CCSwitch 独有的（docx / xlsx / pdf / slides / alipay-payment-skill 等）自动补进 / 菜单。
+
+### MCP
+- 读取 CCSwitch 管理的 MCP 服务列表（\`~/.cc-switch/cc-switch.db\` 的 \`mcp_servers\` 表），用 Node 内置 \`node:sqlite\` 只读打开（无需原生驱动）。
+- 每个启用服务挂载为 \`@deepseek-ai/dsh-mcp-client\` 实例，工具以 \`mcp__服务名__工具名\` 注册，可被模型调用。
+- \`http\` → \`streamable-http\`；\`stdio\` → \`stdio\`；连接失败自动重连（\`failOnStartupError: false\`）。
+
+### 设置页
+- 一个「CCSwitch 导入」分区，含技能 / MCP 两张卡片：总开关、路径、按条目禁用。改动即时生效。
+
+## 配置
+
+\`\`\`yaml
+ccswitch:
+  skills:
+    enabled: true
+    path: ~/.cc-switch/skills
+    disabled: []
+  mcp:
+    enabled: true
+    path: ~/.cc-switch/cc-switch.db
+    disabled: []
+\`\`\`
+
+## 安装（热生效，无需重启 dsh）
+
+1. 安装依赖：
+
+   \`\`\`bash
+   dsh plugin --profile web add github:Elysiaqwq/dsh-ccswitch
+   \`\`\`
+
+2. 在 \`~/.dsh/profiles/web/cordis.patch.yml\` 末尾追加挂载行：
+
+   \`\`\`yaml
+   - insert:
+       - id: dsh-ccswitch
+         name: dsh-ccswitch
+   \`\`\`
+
+3. **刷新浏览器**（F5）。设置页出现「CCSwitch 导入」分区。
+
+> 不要同时用 bundle 层挂载（不要声明 \`dsh.bundle.patch\`，也不要加进 \`dsh.profile.bundles\`）。
+
+## 卸载
+
+1. 删掉 \`cordis.patch.yml\` 里 \`- insert: … dsh-ccswitch …\` 段。
+2. \`dsh plugin --profile web remove dsh-ccswitch\`。
+3. \`ccswitch:\` 分区可手动从 settings.yaml 删掉。
+
+## 验证
+
+\`\`\`bash
+cd dsh-ccswitch && node --no-warnings test-apply.mjs
+\`\`\`
+
+不启动 dsh 的冒烟探针：真实读取 CCSwitch 技能（77 个）与 MCP 服务（4 个）、校验映射与禁用/开关，并以桩 ctx 跑 \`apply()\` / \`reconcile\`。
+
+## 依赖
+
+- 读库用 Node 内置 \`node:sqlite\`（v22.5+），零额外依赖。
+- 运行期经 \`$DSH_HOME/profiles/node_modules\` 回退路径导入 yaml、@deepseek-ai/dsh-settings、@deepseek-ai/schemastery。
+- \`@deepseek-ai/dsh-mcp-client\` 由 loader 按名字解析。
+
