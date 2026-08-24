@@ -1,0 +1,42 @@
+{
+  "name": "dsh-ccswitch",
+  "version": "0.1.0",
+  "description": "Import CCSwitch's skills (~/.cc-switch/skills) AND MCP servers (~/.cc-switch/cc-switch.db) into DeepSeek Harness in one plugin: skills show up in the '/' reference menu, MCP servers are mounted as mcp__<server>__<tool> tools — without modifying DSH itself.",
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "dsh-plugin",
+    "ccswitch",
+    "skills",
+    "mcp",
+    "slash",
+    "model-context-protocol"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "main.js",
+    "client.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.5"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  }
+}
