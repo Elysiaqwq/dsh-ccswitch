@@ -26,9 +26,16 @@
 - ⚙️ Mounts each enabled server as a `@deepseek-ai/dsh-mcp-client` instance; its tools appear as `mcp__<server>__<tool>` and are callable like any other tool.
 - 🌐 `http` → `streamable-http`; `stdio` → `stdio`; unreachable endpoints auto-reconnect (`failOnStartupError: false`).
 
+### 🤖 Models
+
+- Automatically imports the providers/models configured in CCSwitch (`~/.cc-switch/cc-switch.db`, table `providers`) into DSH's `llm-pi-ai.providers` as **`ccswitch-*`** routes.
+- Each imported route carries the CCSwitch base URL, the model list (from `ANTHROPIC_DEFAULT_*_MODEL` / `models` / Codex `config`), and a credential reference; the **API keys are stored in DSH's credentials service** (`.credentials.yaml`).
+- Wire protocol is derived per provider: `anthropic-messages` for Claude-Code endpoints, `openai-completions` for OpenAI-style custom providers, `openai-responses` for Codex providers. Imported models declare `low…max` reasoning efforts.
+- Only `ccswitch-`-prefixed routes are ever touched — your manually configured routes (e.g. `uu`, `ark`) are preserved. Changes apply immediately; stale routes/keys are removed.
+
 ### 🖥️ Settings page
 
-- One **CCSwitch 导入** section with two cards (Skills / MCP): master switches, paths, and per-item disable toggles. Changes apply immediately.
+- One **CCSwitch 导入** section with three cards (Skills / MCP / Models): master switches, paths, and per-item disable toggles. Changes apply immediately.
 
 ## ⚙️ Configuration
 
@@ -42,7 +49,12 @@ ccswitch:
     enabled: true
     path: ~/.cc-switch/cc-switch.db
     disabled: []
+  models:
+    enabled: true
+    disabled: []
 ```
+
+> `models.disabled` lists CCSwitch provider **names** to skip. `models.path` falls back to `mcp.path` (same cc-switch.db).
 
 ## 🚀 Install
 

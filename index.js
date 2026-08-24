@@ -471,6 +471,330 @@ export async function reconcile(state, ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// Models: import CCSwitch-configured providers/models into llm-pi-ai
+// ---------------------------------------------------------------------------
+
+/** Route prefix this plugin owns inside \`llm-pi-ai.providers\`. */
+export const MODEL_PREFIX = 'ccswitch-'
+/** Reasoning levels declared on imported reasoning models. */
+export const MODEL_REASONING_EFFORTS = { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' }
+
+/**
+ * Make a CCSwitch provider name a clean route slug (kebab-case).
+ * @param name - raw provider name/id.
+ * @returns the slug, or \`provider\` when nothing usable remains.
+ */
+export function sanitizeProviderSlug(name) {
+  const slug = String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
+  return slug.length > 0 ? slug : 'provider'
+}
+
+/**
+ * The credential reference an imported route points at (an env-style name the
+ * credentials service stores under \`.credentials.yaml\`).
+ * @param slug - the route slug after \`ccswitch-\`.
+ * @returns a \`^[A-Za-z_][A-Za-z0-9_]*$\` credential reference.
+ */
+export function credentialRefFor(slug) {
+  return ('CCSWITCH_' + slug.replace(/-/g, '_').toUpperCase() + '_API_KEY').slice(0, 60)
+}
+
+/**
+ * Extract the model ids a Claude-Code-style CCSwitch provider declares in its
+ * \`ANTHROPIC_*\` env vars. A \`[1M]\`/\`[2M]\` suffix (or \`[N]G\`) becomes the
+ * model's \`contextWindow\`.
+ * @param env - the provider config's \`env\` object.
+ * @returns deduplicated \`{ id, contextWindow? }\` entries.
+ */
+export function extractAnthropicModels(env) {
+  if (!env || typeof env !== 'object') return []
+  const map = new Map()
+  const add = (raw) => {
+    if (typeof raw !== 'string') return
+    const value = raw.trim()
+    if (!value) return
+    const suffix = /^(.+?)\[(\d+)([MG])\]$/.exec(value)
+    if (suffix !== null) {
+      const id = suffix[1]
+      if (!map.has(id)) {
+        const size = Number(suffix[2])
+        const unit = suffix[3]
+        map.set(id, { id, contextWindow: unit === 'G' ? size * 1e9 : size * 1e6 })
+      }
+    } else if (!map.has(value)) {
+      map.set(value, { id: value })
+    }
+  }
+  for (const [key, value] of Object.entries(env)) {
+    if (key === 'ANTHROPIC_MODEL') {
+      add(value)
+    } else if (key.startsWith('ANTHROPIC_') && key.endsWith('_MODEL') && !key.endsWith('_MODEL_NAME')) {
+      add(value)
+    }
+  }
+  return [...map.values()]
+}
+
+/**
+ * Extract model ids from an OpenAI-style custom provider's \`models\` array.
+ * @param config - the parsed provider config.
+ * @returns \`{ id }\` entries.
+ */
+export function extractCustomModels(config) {
+  const models = Array.isArray(config.models) ? config.models : []
+  const out = []
+  for (const entry of models) {
+    if (entry && typeof entry === 'object' && typeof entry.id === 'string' && entry.id.length > 0) {
+      out.push({ id: entry.id })
+    }
+  }
+  return out
+}
+
+/**
+ * Extract \`base_url\` and \`model\` from a Codex provider's TOML-style config.
+ * @param configText - the \`config\` field (TOML text).
+ * @returns \`{ baseURL?, model? }\`.
+ */
+export function extractCodexInfo(configText) {
+  const base = /^base_url\s*=\s*"([^"]+)"/m.exec(configText)
+  const model = /^model\s*=\s*"([^"]+)"/m.exec(configText)
+  return {
+    baseURL: base?.[1],
+    model: model?.[1],
+  }
+}
+
+/**
+ * Read the providers CCSwitch manages (\`providers\` table, \`settings_config\`
+ * JSON). Read-only, missing DB yields [].
+ * @param dbPath - absolute path of cc-switch.db.
+ * @returns \`{ id, name, config }\` rows, name-sorted.
+ */
+export function readCcswitchProviders(dbPath) {
+  let db
+  try {
+    db = new DatabaseSync(resolveDbPath(dbPath), { readOnly: true })
+    const rows = db.prepare(
+      'SELECT id, name, settings_config FROM providers',
+    ).all()
+    const out = []
+    for (const row of rows) {
+      let config
+      try {
+        config = typeof row.settings_config === 'string' ? JSON.parse(row.settings_config) : row.settings_config
+      } catch {
+        continue // malformed settings_config is skipped
+      }
+      if (!config || typeof config !== 'object') continue
+      out.push({ id: row.id, name: row.name, config })
+    }
+    out.sort((left, right) => (left.name || left.id).localeCompare(right.name || right.id))
+    return out
+  } catch {
+    return []
+  } finally {
+    try {
+      db?.close()
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
+/**
+ * Build the \`llm-pi-ai\` provider routes this plugin imports from CCSwitch.
+ * A provider is imported only when a base URL, an API key, and at least one
+ * model can all be extracted; everything else is skipped.
+ * @param providers - rows from {@link readCcswitchProviders}.
+ * @param disabled - provider names to skip.
+ * @returns \`{ route, profile, credRef, apiKey, providerName, api }\` entries.
+ */
+export function buildModelProfiles(providers, disabled) {
+  const disabledSet = new Set(disabled)
+  const out = []
+  for (const provider of providers) {
+    const name = (provider.name || provider.id || 'provider').trim() || 'provider'
+    if (disabledSet.has(name)) continue
+    const config = provider.config || {}
+    const env = config.env || {}
+    const apiKey = env.ANTHROPIC_AUTH_TOKEN || config.api_key || (config.auth && config.auth.OPENAI_API_KEY)
+    let api = null
+    let baseURL = ''
+    let models = []
+    if (typeof env.ANTHROPIC_BASE_URL === 'string' && env.ANTHROPIC_BASE_URL.length > 0) {
+      // Claude-Code-style provider speaking the Anthropic Messages API.
+      api = 'anthropic-messages'
+      baseURL = env.ANTHROPIC_BASE_URL
+      models = extractAnthropicModels(env)
+    } else if (typeof config.base_url === 'string' && config.base_url.length > 0) {
+      // OpenAI-style custom provider with a models array.
+      api = 'openai-completions'
+      baseURL = config.base_url
+      models = extractCustomModels(config)
+      if (models.length === 0 && typeof config.model === 'string') models = [{ id: config.model }]
+    } else if (typeof config.config === 'string' && config.config.includes('base_url')) {
+      // Codex provider with a TOML config block.
+      const info = extractCodexInfo(config.config)
+      if (info.baseURL && info.model) {
+        api = 'openai-responses'
+        baseURL = info.baseURL
+        models = [{ id: info.model }]
+      }
+    }
+    if (api === null || baseURL.length === 0 || typeof apiKey !== 'string' || apiKey.length === 0 || models.length === 0) {
+      continue
+    }
+    const slug = sanitizeProviderSlug(name)
+    const route = MODEL_PREFIX + slug
+    const credRef = credentialRefFor(slug)
+    // \`compat\` reasoning switches exist only on openai-completions models;
+    // anthropic-messages models keep protocol-native dispatch.
+    const compat = api === 'openai-completions'
+      ? { compat: { thinkingFormat: 'openai', supportsReasoningEffort: true } }
+      : {}
+    out.push({
+      route,
+      credRef,
+      apiKey,
+      providerName: name,
+      api,
+      profile: {
+        apiKeyEnv: credRef,
+        displayName: `${name} (CCSwitch)`,
+        api,
+        baseURL,
+        models: models.map(model => ({
+          id: model.id,
+          name: model.id,
+          ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
+          reasoningEfforts: MODEL_REASONING_EFFORTS,
+          ...compat,
+        })),
+      },
+    })
+  }
+  return out
+}
+
+/** Deep equality over JSON-compatible data (used to skip no-op writes). */
+function deepEqualJson(left, right) {
+  if (left === right) return true
+  if (typeof left !== 'object' || typeof right !== 'object' || left === null || right === null) return false
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false
+    return left.every((entry, index) => deepEqualJson(entry, right[index]))
+  }
+  const leftKeys = Object.keys(left)
+  const rightKeys = Object.keys(right)
+  if (leftKeys.length !== rightKeys.length) return false
+  return leftKeys.every(key => key in right && deepEqualJson(left[key], right[key]))
+}
+
+/**
+ * Reconcile the imported \`ccswitch-*\` provider routes in \`llm-pi-ai\` against
+ * the current CCSwitch provider table: add/update routes, store their API keys
+ * in the credentials service, and remove routes (and keys) that are no longer
+ * desired or when the models import is switched off. Only this plugin's
+ * \`ccswitch-\` prefixed routes are ever touched.
+ * @param state - live wiring (settings/credentials/resolveProfiles/llmNs/source).
+ * @param ctx - plugin context (for logging).
+ */
+export async function reconcileModels(state, ctx) {
+  const settings = state.settings
+  if (settings === null || typeof settings.update !== 'function') return
+  const cfg = state.source()
+  const modelsCfg = cfg?.models ?? {}
+  const mcpCfg = cfg?.mcp ?? {}
+  const dbPath = modelsCfg.path ?? mcpCfg.path
+  const disabled = Array.isArray(modelsCfg.disabled) ? modelsCfg.disabled : []
+  const llmNs = state.llmNs
+  const current = settings.get(llmNs)
+  const currentProviders = current && typeof current.providers === 'object' && current.providers !== null
+    ? current.providers
+    : {}
+  const owned = Object.keys(currentProviders).filter(route => route.startsWith(MODEL_PREFIX))
+
+  const removeRoutes = async (routes) => {
+    if (routes.length === 0) return
+    try {
+      await settings.mutate(llmNs, routes.map(route => ({ op: 'unset', path: ['providers', route] })))
+    } catch (error) {
+      ctx.logger.warn(`dsh-ccswitch: could not remove model routes: ${String(error)}`)
+    }
+    const credentials = state.credentials
+    if (credentials !== null && typeof credentials.unset === 'function') {
+      for (const route of routes) {
+        try {
+          await credentials.unset(credentialRefFor(route.slice(MODEL_PREFIX.length)))
+        } catch {
+          /* absent reference is a no-op */
+        }
+      }
+    }
+  }
+
+  if (modelsCfg.enabled === false) {
+    await removeRoutes(owned)
+    return
+  }
+
+  const providers = readCcswitchProviders(dbPath)
+  const desired = buildModelProfiles(providers, disabled)
+  const desiredByRoute = new Map(desired.map(entry => [entry.route, entry]))
+
+  // Validate the shape of the full merged providers dict through llm-pi-ai's
+  // own schema before touching settings; serviceability is additionally gated
+  // by the namespace's write-time validator (caught below).
+  const merged = { ...currentProviders }
+  for (const entry of desired) merged[entry.route] = entry.profile
+  for (const route of owned) if (!desiredByRoute.has(route)) delete merged[route]
+  if (state.validateSection !== null) {
+    try {
+      state.validateSection(merged)
+    } catch (error) {
+      ctx.logger.warn(`dsh-ccswitch: model import skipped — generated llm-pi-ai providers failed validation: ${String(error)}`)
+      return
+    }
+  }
+
+  // Diff against the currently stored owned routes to avoid no-op writes.
+  const patch = {}
+  for (const entry of desired) {
+    const currentProfile = currentProviders[entry.route]
+    if (currentProfile === undefined || !deepEqualJson(currentProfile, entry.profile)) {
+      patch[entry.route] = entry.profile
+    }
+  }
+  const stale = owned.filter(route => !desiredByRoute.has(route))
+
+  if (Object.keys(patch).length === 0 && stale.length === 0) return
+
+  // Store API keys first so the routes never point at an unset reference.
+  const credentials = state.credentials
+  if (credentials !== null && typeof credentials.set === 'function') {
+    for (const entry of desired) {
+      if (patch[entry.route] === undefined) continue
+      try {
+        const info = await credentials.describe(entry.credRef)
+        if (info?.configured !== true) await credentials.set(entry.credRef, entry.apiKey)
+      } catch (error) {
+        ctx.logger.warn(`dsh-ccswitch: could not store credential ${entry.credRef}: ${String(error)}`)
+      }
+    }
+  }
+  try {
+    if (Object.keys(patch).length > 0) {
+      await settings.update(llmNs, { providers: patch })
+    }
+    await removeRoutes(stale)
+    ctx.logger.info(`dsh-ccswitch: imported ${desired.length} CCSwitch provider route(s) into llm-pi-ai`)
+  } catch (error) {
+    ctx.logger.warn(`dsh-ccswitch: model import write failed: ${String(error)}`)
+  }
+}
+
+// ---------------------------------------------------------------------------
 // HTTP API
 // ---------------------------------------------------------------------------
 
@@ -530,6 +854,7 @@ async function handleApi(req, res, deps) {
       const cfg = deps.source()
       const skillsCfg = cfg?.skills ?? {}
       const mcpCfg = cfg?.mcp ?? {}
+      const modelsCfg = cfg?.models ?? {}
       const provider = deps.provider()
       let skills = []
       if (provider !== null) {
@@ -552,6 +877,8 @@ async function handleApi(req, res, deps) {
       const disabledSkills = new Set(Array.isArray(skillsCfg.disabled) ? skillsCfg.disabled : [])
       const servers = readCcswitchMcpServers(mcpCfg.path)
       const disabledMcp = new Set(Array.isArray(mcpCfg.disabled) ? mcpCfg.disabled : [])
+      const modelsDbPath = modelsCfg.path ?? mcpCfg.path
+      const modelProviders = buildModelProfiles(readCcswitchProviders(modelsDbPath), modelsCfg.disabled ?? [])
       const mounted = deps.mounted()
       let mcpToolCount = 0
       const tools = deps.tools()
@@ -597,6 +924,19 @@ async function handleApi(req, res, deps) {
             mounted: mounted.has(sanitizeServerName(server.name)),
           })),
         },
+        models: {
+          enabled: modelsCfg.enabled !== false,
+          path: resolveDbPath(modelsDbPath),
+          disabled: Array.isArray(modelsCfg.disabled) ? [...modelsCfg.disabled] : [],
+          providers: modelProviders.map(entry => ({
+            route: entry.route,
+            displayName: entry.profile.displayName,
+            providerName: entry.providerName,
+            api: entry.api,
+            baseURL: entry.profile.baseURL,
+            models: entry.profile.models.map(model => model.id),
+          })),
+        },
       })
       return
     }
@@ -607,7 +947,7 @@ async function handleApi(req, res, deps) {
         return
       }
       const section = {}
-      for (const part of ['skills', 'mcp']) {
+      for (const part of ['skills', 'mcp', 'models']) {
         const raw = body[part]
         if (raw === undefined) continue
         if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -670,6 +1010,10 @@ export async function apply(ctx) {
   setYamlParser(yamlMod.parse)
   const { settingsNamespace } = await importPeer('@deepseek-ai/dsh-settings')
   const { default: z } = await importPeer('@deepseek-ai/schemastery')
+  // llm-pi-ai's own schema (shape + defaults). Serviceability beyond the shape
+  // is gated at write time by the namespace's registered validator, which is
+  // why reconcileModels wraps the write in try/catch too.
+  const { Config: LlmPiAiConfig } = await importPeer('@deepseek-ai/dsh-llm-pi-ai')
 
   const PartConfig = z.object({
     enabled: z.boolean().default(true),
@@ -679,24 +1023,30 @@ export async function apply(ctx) {
   const Schema = z.object({
     skills: PartConfig,
     mcp: PartConfig,
+    models: PartConfig,
   })
 
-  /** Live wiring shared by the provider, the reconciler, and the API route. */
+  /** Live wiring shared by the provider, the reconcilers, and the API route. */
   const state = {
     settings: null,
     skills: null,
     loader: null,
+    credentials: null,
     provider: null,
     control: null,
     mounted: new Map(),
+    llmNs: settingsNamespace('llm-pi-ai'),
+    validateSection: (providers) => { LlmPiAiConfig({ providers }) },
     source: () => ({}),
   }
 
-  /** Serialized MCP reconciliation queue (create/remove are async and ordered). */
+  /** Serialized reconciliation queue (create/remove are async and ordered). */
   let queue = Promise.resolve()
   const scheduleReconcile = () => {
     queue = queue.then(() => reconcile(state, ctx)).catch((error) => {
       ctx.logger.warn(`dsh-ccswitch: MCP reconcile failed: ${String(error)}`)
+    }).then(() => reconcileModels(state, ctx)).catch((error) => {
+      ctx.logger.warn(`dsh-ccswitch: model reconcile failed: ${String(error)}`)
     })
   }
   const afterSave = () => {
@@ -726,6 +1076,11 @@ export async function apply(ctx) {
     scheduleReconcile()
   })
 
+  // Credentials: import stores CCSwitch API keys here.
+  ctx.inject(['credentials'], (cctx) => {
+    state.credentials = cctx.credentials
+  })
+
   // Settings: register the namespace, point the source at the scope, and
   // invalidate/reconcile on every committed change.
   ctx.inject(['settings'], (sctx) => {
@@ -737,6 +1092,8 @@ export async function apply(ctx) {
       state.source = () => ({})
       state.settings = null
     })
+    // Kick the initial skills/MCP/models reconcile once settings are live.
+    scheduleReconcile()
   })
 
   // Teardown: unmount every mcp-client instance this plugin created.

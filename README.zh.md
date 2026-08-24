@@ -26,9 +26,16 @@
 - ⚙️ 每个启用服务挂载为 `@deepseek-ai/dsh-mcp-client` 实例，工具以 `mcp__服务名__工具名` 注册，可被模型调用。
 - 🌐 `http` → `streamable-http`；`stdio` → `stdio`；连接失败自动重连（`failOnStartupError: false`）。
 
+### 🤖 模型（自动导入）
+
+- 自动把 CCSwitch 中配置的 provider/模型（`~/.cc-switch/cc-switch.db` 的 `providers` 表）导入 DSH 的 `llm-pi-ai.providers`，路由名为 **`ccswitch-*`**。
+- 每条路由携带 CCSwitch 的 baseURL、模型列表（来自 `ANTHROPIC_DEFAULT_*_MODEL` / `models` / Codex `config`）与凭据引用；**API Key 存入 DSH 凭据库**（`.credentials.yaml`）。
+- 按 provider 类型推导协议：Claude-Code 端点用 `anthropic-messages`，OpenAI 风格自定义 provider 用 `openai-completions`，Codex 用 `openai-responses`。导入的模型声明 `low…max` 思考档位。
+- 只管理 `ccswitch-` 前缀的路由——你手动配置的 `uu` / `ark` 等路由不受影响。改动即时生效，失效路由与 Key 自动清理。
+
 ### 🖥️ 设置页
 
-- 一个「CCSwitch 导入」分区，含技能 / MCP 两张卡片：总开关、路径、按条目禁用。改动即时生效。
+- 一个「CCSwitch 导入」分区，含技能 / MCP / 模型 三张卡片：总开关、路径、按条目禁用。改动即时生效。
 
 ## ⚙️ 配置
 
@@ -42,7 +49,12 @@ ccswitch:
     enabled: true
     path: ~/.cc-switch/cc-switch.db
     disabled: []
+  models:
+    enabled: true
+    disabled: []
 ```
+
+> `models.disabled` 填要跳过的 CCSwitch provider **名称**。`models.path` 缺省沿用 `mcp.path`（同一个 cc-switch.db）。
 
 ## 🚀 安装
 

@@ -112,6 +112,9 @@ window.__ModuleLoader__.load({
       var mcpOnState = useState(true);  var mcpOn = mcpOnState[0];  var setMcpOn = mcpOnState[1];
       var mcpPathState = useState("");  var mcpPath = mcpPathState[0];  var setMcpPath = mcpPathState[1];
       var mcpDisabledState = useState({});  var mcpDisabled = mcpDisabledState[0];  var setMcpDisabled = mcpDisabledState[1];
+      // models form
+      var modelsOnState = useState(true);  var modelsOn = modelsOnState[0];  var setModelsOn = modelsOnState[1];
+      var modelsDisabledState = useState({});  var modelsDisabled = modelsDisabledState[0];  var setModelsDisabled = modelsDisabledState[1];
 
       function load() {
         setBusy(true);
@@ -128,6 +131,9 @@ window.__ModuleLoader__.load({
             setMcpOn(mc.enabled !== false);
             setMcpPath(mc.path || "");
             var mnext = {}; (mc.disabled || []).forEach(function (n) { mnext[n] = true; }); setMcpDisabled(mnext);
+            var mo = payload.models || {};
+            setModelsOn(mo.enabled !== false);
+            var monext = {}; (mo.disabled || []).forEach(function (n) { monext[n] = true; }); setModelsDisabled(monext);
           })
           .catch(function (e) { setError(cleanErrText(e && e.message ? e.message : String(e))); })
           .then(function () { setBusy(false); });
@@ -138,12 +144,14 @@ window.__ModuleLoader__.load({
       function save() {
         var sDisabled = Object.keys(skillsDisabled).filter(function (n) { return skillsDisabled[n]; });
         var mDisabled = Object.keys(mcpDisabled).filter(function (n) { return mcpDisabled[n]; });
+        var moDisabled = Object.keys(modelsDisabled).filter(function (n) { return modelsDisabled[n]; });
         setBusy(true);
         setError(null);
         setNotice(null);
         return callApi("POST", {
           skills: { enabled: skillsOn, path: skillsPath || null, disabled: sDisabled },
           mcp: { enabled: mcpOn, path: mcpPath || null, disabled: mDisabled },
+          models: { enabled: modelsOn, path: null, disabled: moDisabled },
         })
           .then(function () {
             setNotice("已保存到 settings.yaml 的 ccswitch 分区，正在重新挂载 ...");
@@ -155,6 +163,7 @@ window.__ModuleLoader__.load({
 
       var skills = (data && data.skills && data.skills.skills) || [];
       var mcpServers = (data && data.mcp && data.mcp.servers) || [];
+      var modelProviders = (data && data.models && data.models.providers) || [];
       var toggle = function (setter, map) {
         return function (name) {
           setter(Object.assign({}, map, (function () { var next = {}; next[name] = !map[name]; return next; })()));
@@ -163,8 +172,8 @@ window.__ModuleLoader__.load({
 
       return h("div", { style: s.section },
         h("p", { style: s.dim },
-          "从 CCSwitch 导入技能与 MCP 服务到 DSH。技能会出现在输入框的 / 菜单（/技能名 引用，tool-skill 注入正文）；" +
-          "MCP 服务会挂载为 mcp__服务名__工具名 的工具。"),
+          "从 CCSwitch 导入技能、MCP 服务与模型到 DSH。技能会出现在输入框的 / 菜单；MCP 服务挂载为 mcp__服务名__工具名 的工具；" +
+          "模型会以 ccswitch-* 路由写入 llm-pi-ai（含 API Key，存到凭据库），出现在模型选择器。"),
 
         // ---- 技能卡片 ----
         h("div", { style: s.card },
@@ -222,6 +231,34 @@ window.__ModuleLoader__.load({
                       h("span", { style: server.mounted ? s.badgeOn : s.badge }, server.mounted ? "已挂载" : (server.disabled ? "已禁用" : "未挂载")),
                       h("span", { style: s.badge }, server.type === "stdio" ? "stdio" : "http")));
                 }))),
+
+        // ---- 模型卡片 ----
+        h("div", { style: s.card },
+          h("div", { style: s.cardTitle }, "模型（自动导入）"),
+          h("div", { style: s.row },
+            h("label", { style: s.label }, "启用导入"),
+            h("input", { type: "checkbox", checked: modelsOn, disabled: busy, onChange: function (e) { setModelsOn(e.target.checked); }, style: { width: 16, height: 16 } }),
+            h("span", { style: s.dim },
+              data === null ? "" : "可导入 " + modelProviders.length + " 个 provider 路由（写入 llm-pi-ai，key 存入凭据库）")),
+          h("div", { style: s.row },
+            h("span", { style: s.label }, "Provider 路由"),
+            h("span", { style: s.dim }, "勾选 = 不导入")),
+          data === null && busy
+            ? h("p", { style: s.hint }, "正在读取 ...")
+            : modelProviders.length === 0 && data !== null
+            ? h("p", { style: s.hint }, "CCSwitch 中没有可导入的模型（需要 baseURL + API Key + 至少一个模型）。")
+            : h("div", { style: s.list },
+                modelProviders.map(function (prov) {
+                  return h("div", { key: prov.route, style: s.item },
+                    h("input", { type: "checkbox", checked: !!modelsDisabled[prov.providerName], disabled: busy, onChange: function () { toggle(setModelsDisabled, modelsDisabled)(prov.providerName); }, style: { width: 14, height: 14, marginTop: 2 } }),
+                    h("span", { style: s.itemName }, prov.route),
+                    h("span", { style: s.itemDesc },
+                      prov.displayName + " · " + prov.api,
+                      h("span", { style: s.badge }, prov.models.join(" / "))));
+                }))),
+        h("p", { style: s.hint },
+          "导入会把每个可用的 CCSwitch provider 写成 llm-pi-ai.providers.ccswitch-* 路由，并把 API Key 存入凭据库；" +
+          "只管理 ccswitch-* 前缀的路由，不会改动你手动配置的 uu/ark 等路由。"),
 
         h("div", { style: s.row },
           h("button", { style: s.btnPrimary, disabled: busy, onClick: function () { save(); } },

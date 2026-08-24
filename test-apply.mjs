@@ -6,7 +6,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-const plugin = await import(new URL('./main.js', import.meta.url).href)
+const plugin = await import(new URL('./index.js', import.meta.url).href)
 
 const req = createRequire(join(homedir(), '.dsh', 'profiles', 'node_modules', 'probe.cjs'))
 const yamlMod = await import(pathToFileURL(req.resolve('yaml')).href)
@@ -41,9 +41,58 @@ const cd = plugin.toMcpClientConfig('chrome-devtools', { type: 'stdio', command:
 if (cd.transport !== 'stdio' || cd.command !== 'npx') throw new Error('stdio mapping failed')
 if (plugin.sanitizeServerName('Pixso') !== 'pixso') throw new Error('sanitize failed')
 
+// --- Models: extraction + route generation against the real CCSwitch DB ---
+const providers = plugin.readCcswitchProviders(plugin.DEFAULT_DB_PATH)
+console.log('CCSwitch providers:', providers.length)
+if (providers.length === 0) throw new Error('no providers read')
+
+const anthropic = plugin.extractAnthropicModels({
+  ANTHROPIC_BASE_URL: 'https://x',
+  ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-5[1M]',
+  ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-5[1M]',
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-opus-5',
+  ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: 'claude-opus-5',
+})
+const ids = anthropic.map(m => m.id).sort().join(',')
+if (ids !== 'claude-opus-5,claude-sonnet-5') throw new Error('anthropic extraction wrong: ' + ids)
+if (anthropic.find(m => m.id === 'claude-opus-5')?.contextWindow !== 1_000_000) throw new Error('contextWindow not parsed')
+console.log('extractAnthropicModels OK:', ids)
+
+const toml = 'model_provider = "custom"\nmodel = "gpt-5.5"\nbase_url = "https://yunwu.ai"\n'
+const codex = plugin.extractCodexInfo(toml)
+if (codex.model !== 'gpt-5.5' || codex.baseURL !== 'https://yunwu.ai') throw new Error('codex extraction wrong')
+console.log('extractCodexInfo OK:', codex.model)
+
+const built = plugin.buildModelProfiles(providers, [])
+console.log('importable provider routes:', built.length, '->', built.map(b => b.route).join(', '))
+if (built.length === 0) throw new Error('no importable provider routes')
+
+// Validate every generated profile through llm-pi-ai's own Config schema
+// (shape + defaults; serviceability is additionally gated at write time by the
+// namespace's registered validator).
+const llmPiAi = await import(pathToFileURL(req.resolve('@deepseek-ai/dsh-llm-pi-ai')).href)
+const mergedProviders = {}
+for (const b of built) mergedProviders[b.route] = b.profile
+let validated = true
+try {
+  llmPiAi.Config({ providers: mergedProviders })
+} catch (error) {
+  validated = false
+  console.log('VALIDATION FAILED:', error.message)
+}
+if (!validated) throw new Error('generated providers failed Config schema')
+const first = built[0]
+if (!first.profile.apiKeyEnv || !first.profile.models || first.profile.models.length === 0) throw new Error('profile shape wrong')
+if (!first.credRef.startsWith('CCSWITCH_')) throw new Error('credential ref wrong')
+console.log('Config schema validation OK; sample:', first.route, '|', first.profile.api, '|', first.profile.models.map(m => m.id).join(','))
+
 // --- apply() against a stub ctx ---
 const created = []
 const removed = []
+const storedCreds = []
+const unsetCreds = []
+const updated = []
+const mutated = []
 let currentCfg = {}
 let replaced = null
 let routeRegistered = null
@@ -59,8 +108,18 @@ const ctx = {
       callback({ loader: { create: async ({ name, config }) => { created.push({ name, config }); return 'e-' + config.serverName }, remove: async (id) => removed.push(id) } })
       return
     }
+    if (names.includes('credentials')) {
+      callback({ credentials: { resolve: async () => undefined, describe: async () => ({ configured: false, writable: true }), set: async (ref, value) => { storedCreds.push({ ref, value }) }, unset: async (ref) => { unsetCreds.push(ref) } } })
+      return
+    }
     if (names.includes('settings')) {
-      callback({ settings: { register: (ns, schema) => { registeredNs = ns; return { get: () => currentCfg, watch: () => () => {} } }, replace: (ns, section) => { replaced = { ns, section }; return Promise.resolve() } }, effect: fn => fn() })
+      callback({ settings: {
+        register: (ns, schema) => { registeredNs = ns; return { get: () => currentCfg, watch: () => () => {} } },
+        replace: (ns, section) => { replaced = { ns, section }; return Promise.resolve() },
+        get: (ns) => (ns === 'llm-pi-ai' ? { providers: {} } : undefined),
+        update: async (ns, patch) => { updated.push({ ns, patch }) },
+        mutate: async (ns, ops) => { mutated.push({ ns, ops }) },
+      }, effect: fn => fn() })
       return
     }
     if (names.includes('webServer')) {
@@ -83,6 +142,11 @@ if (routeRegistered?.path !== '/dsh-ccswitch/api') throw new Error('route not re
 console.log('mcp entries created:', created.map(c => c.config.serverName).join(', '))
 if (created.length !== 4) throw new Error('expected 4 mcp-client creates, got ' + created.length)
 if (!created.every(c => c.name === '@deepseek-ai/dsh-mcp-client')) throw new Error('wrong package created')
+
+// models import should have run during apply (reconcileModels via settings inject)
+if (updated.length === 0) throw new Error('reconcileModels did not write llm-pi-ai routes')
+if (storedCreds.length === 0) throw new Error('reconcileModels did not store credentials')
+console.log('models routes written:', updated.map(u => Object.keys(u.patch.providers).length).join(','), '| creds stored:', storedCreds.length)
 
 // --- master-off must unmount ---
 state.mounted = new Map(created.map(c => [c.config.serverName, 'e-' + c.config.serverName]))
