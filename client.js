@@ -254,7 +254,13 @@ window.__ModuleLoader__.load({
                     h("span", { style: s.itemName }, prov.route),
                     h("span", { style: s.itemDesc },
                       prov.displayName + " · " + prov.api,
-                      h("span", { style: s.badge }, prov.models.join(" / "))));
+                      h("span", { style: s.badge }, prov.models.map(function (m) {
+                        if (typeof m === "string") return m;
+                        var bits = [];
+                        if (m.contextWindow !== undefined) bits.push((m.contextWindow / 1000) + "K ctx");
+                        if (m.maxTokens !== undefined) bits.push((m.maxTokens / 1000) + "K out");
+                        return bits.length > 0 ? m.id + " (" + bits.join("/") + ")" : m.id;
+                      }).join(" / "))));
                 }))),
         h("p", { style: s.hint },
           "导入会把每个可用的 CCSwitch provider 写成 llm-pi-ai.providers.ccswitch-* 路由，并把 API Key 存入凭据库；" +

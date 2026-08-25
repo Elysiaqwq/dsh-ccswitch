@@ -1,7 +1,7 @@
 {
   "name": "dsh-ccswitch",
-  "version": "0.1.0",
-  "description": "Import CCSwitch's skills (~/.cc-switch/skills) AND MCP servers (~/.cc-switch/cc-switch.db) into DeepSeek Harness in one plugin: skills show up in the '/' reference menu, MCP servers are mounted as mcp__<server>__<tool> tools — without modifying DSH itself.",
+  "version": "0.2.0",
+  "description": "Import CCSwitch's skills (~/.cc-switch/skills), MCP servers, AND providers/models (~/.cc-switch/cc-switch.db) into DeepSeek Harness in one plugin: skills show up in the '/' reference menu, MCP servers are mounted as mcp__<server>__<tool> tools, and models become ccswitch-* llm-pi-ai routes carrying CCSwitch's context-window and max-output settings — without modifying DSH itself.",
   "keywords": [
     "deepseek",
     "harness",

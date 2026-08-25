@@ -500,11 +500,42 @@ export function credentialRefFor(slug) {
 }
 
 /**
+ * Parse a CCSwitch bracket size suffix on a model id into token counts.
+ * Accepted forms (case-insensitive units): \`[1M]\`, \`[200K]\`, \`[1G]\` for the
+ * context window; an optional second segment after \`/\` sizes the maximum
+ * output — \`id[1M/64K]\` means a 1M-token context and a 64K-token output.
+ * @param raw - the full model string, e.g. \`claude-opus-5[1M/64k]\`.
+ * @returns \`{ id, contextWindow?, maxTokens? }\`, or undefined when there is
+ *   no well-formed suffix.
+ */
+export function parseModelSizeSuffix(raw) {
+  const suffix = /^(.+?)\[(\d+)([KMG])(?:\s*\/\s*(\d+)([KMG]))?\]$/i.exec(raw)
+  if (suffix === null) return undefined
+  const scale = (digits, unit) => Number(digits) * ({ k: 1e3, m: 1e6, g: 1e9 })[unit.toLowerCase()]
+  const entry = { id: suffix[1], contextWindow: scale(suffix[2], suffix[3]) }
+  if (suffix[4] !== undefined && suffix[5] !== undefined) {
+    entry.maxTokens = scale(suffix[4], suffix[5])
+  }
+  return entry
+}
+
+/** First positive integer among tolerant per-model field spellings. */
+function firstNumberField(entry, keys) {
+  for (const key of keys) {
+    const value = entry[key]
+    if (value === undefined || value === null || value === '') continue
+    const parsed = typeof value === 'number' ? value : Number(String(value).trim())
+    if (Number.isFinite(parsed) && parsed > 0) return Math.round(parsed)
+  }
+  return undefined
+}
+
+/**
  * Extract the model ids a Claude-Code-style CCSwitch provider declares in its
- * \`ANTHROPIC_*\` env vars. A \`[1M]\`/\`[2M]\` suffix (or \`[N]G\`) becomes the
- * model's \`contextWindow\`.
+ * \`ANTHROPIC_*\` env vars. A \`[1M]\`/\`[200K]\`/\`[1G]\` suffix becomes the
+ * model's \`contextWindow\`; \`[1M/64K]\` also sets \`maxTokens\`.
  * @param env - the provider config's \`env\` object.
- * @returns deduplicated \`{ id, contextWindow? }\` entries.
+ * @returns deduplicated \`{ id, contextWindow?, maxTokens? }\` entries.
  */
 export function extractAnthropicModels(env) {
   if (!env || typeof env !== 'object') return []
@@ -513,16 +544,13 @@ export function extractAnthropicModels(env) {
     if (typeof raw !== 'string') return
     const value = raw.trim()
     if (!value) return
-    const suffix = /^(.+?)\[(\d+)([MG])\]$/.exec(value)
-    if (suffix !== null) {
-      const id = suffix[1]
-      if (!map.has(id)) {
-        const size = Number(suffix[2])
-        const unit = suffix[3]
-        map.set(id, { id, contextWindow: unit === 'G' ? size * 1e9 : size * 1e6 })
-      }
-    } else if (!map.has(value)) {
-      map.set(value, { id: value })
+    const sized = parseModelSizeSuffix(value)
+    const entry = sized !== undefined ? { ...sized } : { id: value }
+    const existing = map.get(entry.id)
+    // A suffixed spelling wins over a bare one; otherwise first wins.
+    if (existing === undefined ||
+        (entry.contextWindow !== undefined && existing.contextWindow === undefined)) {
+      map.set(entry.id, entry)
     }
   }
   for (const [key, value] of Object.entries(env)) {
@@ -535,18 +563,34 @@ export function extractAnthropicModels(env) {
   return [...map.values()]
 }
 
+/** Tolerant per-model field spellings CCSwitch custom providers use. */
+export const CONTEXT_FIELDS = ['contextWindow', 'context_window', 'contextLength', 'context_length', 'context', 'contextSize']
+/** Tolerant per-model max-output field spellings. */
+export const MAX_OUTPUT_FIELDS = ['maxTokens', 'max_tokens', 'maxOutputTokens', 'max_output_tokens', 'outputTokens', 'output_tokens', 'maxOutput', 'maxOutputTokensLimit']
+
 /**
- * Extract model ids from an OpenAI-style custom provider's \`models\` array.
+ * Extract models from an OpenAI-style custom provider's \`models\` array,
+ * carrying each entry's context-length and maximum-output settings onto
+ * \`contextWindow\`/\`maxTokens\`. Sizes may be numbers, numeric strings,
+ * or a \`[N](K|M|G)[/out]\` suffix on the id; explicit fields win over the id
+ * suffix.
  * @param config - the parsed provider config.
- * @returns \`{ id }\` entries.
+ * @returns \`{ id, contextWindow?, maxTokens? }\` entries.
  */
 export function extractCustomModels(config) {
   const models = Array.isArray(config.models) ? config.models : []
   const out = []
   for (const entry of models) {
-    if (entry && typeof entry === 'object' && typeof entry.id === 'string' && entry.id.length > 0) {
-      out.push({ id: entry.id })
-    }
+    if (!entry || typeof entry !== 'object') continue
+    const rawId = typeof entry.id === 'string' && entry.id.length > 0 ? entry.id : entry.name
+    if (typeof rawId !== 'string' || rawId.length === 0) continue
+    const sized = parseModelSizeSuffix(rawId.trim())
+    const model = sized !== undefined ? { ...sized } : { id: rawId.trim() }
+    const contextWindow = firstNumberField(entry, CONTEXT_FIELDS)
+    if (contextWindow !== undefined) model.contextWindow = contextWindow
+    const maxTokens = firstNumberField(entry, MAX_OUTPUT_FIELDS)
+    if (maxTokens !== undefined) model.maxTokens = maxTokens
+    out.push(model)
   }
   return out
 }
@@ -668,6 +712,7 @@ export function buildModelProfiles(providers, disabled) {
           id: model.id,
           name: model.id,
           ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
+          ...(model.maxTokens !== undefined ? { maxTokens: model.maxTokens } : {}),
           reasoningEfforts: MODEL_REASONING_EFFORTS,
           ...compat,
         })),
@@ -952,7 +997,11 @@ async function handleApi(req, res, deps) {
             providerName: entry.providerName,
             api: entry.api,
             baseURL: entry.profile.baseURL,
-            models: entry.profile.models.map(model => model.id),
+            models: entry.profile.models.map(model => ({
+              id: model.id,
+              ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
+              ...(model.maxTokens !== undefined ? { maxTokens: model.maxTokens } : {}),
+            })),
           })),
         },
       })

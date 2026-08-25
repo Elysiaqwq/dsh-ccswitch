@@ -31,6 +31,7 @@
 - 自动把 CCSwitch 中配置的 provider/模型（`~/.cc-switch/cc-switch.db` 的 `providers` 表）导入 DSH 的 `llm-pi-ai.providers`，路由名为 **`ccswitch-*`**。
 - 每条路由携带 CCSwitch 的 baseURL、模型列表（来自 `ANTHROPIC_DEFAULT_*_MODEL` / `models` / Codex `config`）与凭据引用；**API Key 存入 DSH 凭据库**（`.credentials.yaml`）。
 - 按 provider 类型推导协议：Claude-Code 端点用 `anthropic-messages`，OpenAI 风格自定义 provider 用 `openai-completions`，Codex 用 `openai-responses`。导入的模型声明 `low…max` 思考档位。
+- 自动携带 CCSwitch 中配置的**上下文长度**与**最大输出**到 DSH 模型配置（`contextWindow` / `maxTokens`）：模型 id 的 `[1M]`/`[200K]`/`[1G]` 后缀决定上下文，可选 `[1M/64K]` 第二段决定输出；自定义 provider 模型条目的字段（如 `contextLength`/`contextWindow`、`maxTokens`/`maxOutputTokens`，驼峰或下划线均可）优先于 id 后缀。
 - 只管理 `ccswitch-` 前缀的路由——你手动配置的 `uu` / `ark` 等路由不受影响。改动即时生效，失效路由与 Key 自动清理。
 
 ### 🖥️ 设置页

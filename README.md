@@ -31,6 +31,7 @@
 - Automatically imports the providers/models configured in CCSwitch (`~/.cc-switch/cc-switch.db`, table `providers`) into DSH's `llm-pi-ai.providers` as **`ccswitch-*`** routes.
 - Each imported route carries the CCSwitch base URL, the model list (from `ANTHROPIC_DEFAULT_*_MODEL` / `models` / Codex `config`), and a credential reference; the **API keys are stored in DSH's credentials service** (`.credentials.yaml`).
 - Wire protocol is derived per provider: `anthropic-messages` for Claude-Code endpoints, `openai-completions` for OpenAI-style custom providers, `openai-responses` for Codex providers. Imported models declare `low…max` reasoning efforts.
+- Context length and maximum output configured in CCSwitch are carried onto the imported models automatically (`contextWindow` / `maxTokens`): a `[1M]`/`[200K]`/`[1G]` suffix on a model id sizes the context window and an optional second segment (`[1M/64K]`) sizes the output; explicit per-model fields on custom-provider entries (e.g. `contextLength`/`contextWindow`, `maxTokens`/`maxOutputTokens`, camelCase or snake_case) win over the id suffix.
 - Only `ccswitch-`-prefixed routes are ever touched — your manually configured routes (e.g. `uu`, `ark`) are preserved. Changes apply immediately; stale routes/keys are removed.
 
 ### 🖥️ Settings page

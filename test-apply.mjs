@@ -56,7 +56,18 @@ const anthropic = plugin.extractAnthropicModels({
 const ids = anthropic.map(m => m.id).sort().join(',')
 if (ids !== 'claude-opus-5,claude-sonnet-5') throw new Error('anthropic extraction wrong: ' + ids)
 if (anthropic.find(m => m.id === 'claude-opus-5')?.contextWindow !== 1_000_000) throw new Error('contextWindow not parsed')
-console.log('extractAnthropicModels OK:', ids)
+const sized = plugin.parseModelSizeSuffix('test-model[1M/64k]')
+if (sized?.contextWindow !== 1_000_000 || sized?.maxTokens !== 64_000 || sized?.id !== 'test-model') throw new Error('size suffix parse failed')
+if (plugin.parseModelSizeSuffix('plain-id') !== undefined) throw new Error('suffix parser too lenient')
+const custom = plugin.extractCustomModels({ models: [
+  { id: 'm-a', contextLength: 128000, maxTokens: '8192' },
+  { id: 'm-b[200K]', name: 'ignored-name' },
+  { id: 'm-c', context_window: 256000, max_output_tokens: 32000 },
+] })
+if (custom[0].contextWindow !== 128_000 || custom[0].maxTokens !== 8192) throw new Error('custom ctx/out fields not picked up')
+if (custom[1].contextWindow !== 200_000) throw new Error('custom suffix ctx not parsed')
+if (custom[2].contextWindow !== 256_000 || custom[2].maxTokens !== 32_000) throw new Error('snake_case fields not picked up')
+console.log('extractAnthropicModels + extractCustomModels OK:', ids, '|', JSON.stringify(custom))
 
 const toml = 'model_provider = "custom"\nmodel = "gpt-5.5"\nbase_url = "https://yunwu.ai"\n'
 const codex = plugin.extractCodexInfo(toml)
